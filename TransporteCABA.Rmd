@@ -229,28 +229,7 @@ ggplot(SBxC, aes(reorder(Comuna, Ciclovias),Ciclovias, label=Ciclovias)) +
        y="")+
   geom_text(size = 3, position = position_stack(vjust = 0.5))
   
-  
-```
-
-*Lo que esta abajo fue un intento fallido de circunscribir las lineas de colectivos y trenes a solo CABA. Sigo probando*
-2. tenemos que setearle un CRS a los dfs de colectivos y trenes
-```{r}
-st_crs(CABA)
-st_crs(Trenes)<-4326
-st_crs(colectivos)<-4326
-
-```
-
-3.filtramos los recorridos de los colectivos y trenes a solo dentro de caba 
-```{r}
-TrenesCABA<-st_filter(Trenes,CABA, join=st_contains())
-
-#probamos a ver si quedo bien
-leaflet() %>%
-  setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
-  addProviderTiles(providers$CartoDB.Positron) %>%
-  addPolylines(data = Trenes2, color= "#5e4ccf", opacity = .3, weight = 3)
-```
+ 
 
 
 
