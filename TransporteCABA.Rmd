@@ -27,7 +27,7 @@ plot(pressure)
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
 
-*Nos proponemos mapear los recorridos de los colectivos, trenes, subterraneos en la CABA, complementando con graficos que ilustren la cantidad de estaciones/paradas de transporte segun comuna, con el objetivo final de una mejor comprension sobre la conexion que cada comuna tiene con el resto de la ciudad.*
+*Nos proponemos mapear los recorridos de los colectivos, trenes, subterraneos en la CABA, complementando con graficos de barras y coropletas que ilustren la cantidad de estaciones/paradas de transporte segun comuna, con el objetivo final de una mejor comprension sobre la conexion que cada comuna tiene con el resto de la ciudad.*
 
 
 *1. Cargo librerias*
@@ -36,86 +36,130 @@ library(tidyverse)
 library(dplyr)
 library(data.table)
 library(ggplot2)
+library(plotly)
 library(sf)
 library(ggmap)
 library(leaflet)
 library(spatialEco)
+library(rgeos)
+
 ```
 
-*2.1Comenzamos con Colectivos leyendo el data set de sus Recorridos *
+*2.Cargamos y preparamos todos los datos que vamos a utilizar. En el caso de ser csv, indicamos cual es su columna con datos geo con "st_as_sfc" y definimos el ds como un shapefile con "st_as_sf"*
+*2.1.1 Data de los Recorridos*
 ```{r}
-colectivos<-fread("recorrido-colectivos.csv")
-```
 
-*2.1 Le indicamos qué columna posee los datos geo y la convertimos*
-```{r}
+colectivos<-fread("recorrido-colectivos.csv", encoding = "UTF-8")
 colectivos$WKT <- st_as_sfc(colectivos$WKT)
 colectivos<- st_as_sf(colectivos)
+view(colectivos)
+#nos quedamos con las columnas significativas
+colectivos<-colectivos[,c(1,15,17)]
+
+Subte<-fread("lineas-de-subte.csv", encoding = "UTF-8")
+Subte$wkt <- st_as_sfc(Subte$wkt)
+Subte<- st_as_sf(Subte)
+view(Subte)
+
+Accesubte<-fread("estaciones-accesibles.csv")
+#filtramos las estaciones accesibles que no posean ascensores puesto que no son totalmente accesibles
+Accesubte<-Accesubte%>%filter(ascensores>=1)
+view(Accesubte)
+
+Trenes<-fread("red-de-ferrocarril.csv", encoding = "UTF-8")
+Trenes$WKT <- st_as_sfc(Trenes$WKT)
+Trenes<- st_as_sf(Trenes)
+view(Trenes)
+Trenes<-Trenes[,c(1,7)]
+
+Ciclovias<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/transporte/ciclovias/ciclovias_WGS84.geojson")
+view(Ciclovias)
+Ciclovias<-Ciclovias[,c(15,22,28)]
 ```
 
-*2.2 Mapeamos*
+*2.1.2 Data de las Estaciones*
 ```{r}
+ParColec<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/colectivos/paradas-de-colectivo.geojson")
+view(ParColec)
+ParColec<-ParColec[,c(4,5,13)]
+
+EstSubt<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/subte-estaciones/subte_estaciones.geojson")
+view(EstSubt)
+EstSubt<-EstSubt[,c(3,4)]
+
+EstTren<-fread("estaciones-de-ferrocarril.csv")
+view(EstTren)
+EstTren<-EstTren[,c(1,2,9)]
+##definimos como NA y removemos con "complete.cases" aquellos casos que tengan vacia la columna de comunas puesto que estan fuera de la CABA.
+EstTren$comuna[EstTren$comuna==""]<-NA
+EstTren<-EstTren[complete.cases(EstTren[ , 3]),]
+##unificamos el formato de la columna Comuna(es el unico ds que ya la incluye)
+EstTren$comuna<-gsub("Comuna ","",EstTren$comuna)
+
+EcoBici<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/transporte/estaciones-bicicletas-publicas/nuevas-estaciones-bicicletas-publicas.geojson")
+view(EcoBici)
+```
+
+*2.2.1 La mayoria de los ds de estaciones vienen sin columna de Comuna, asi que vamos a hacerlo. Primero averiguamos la geografia de cada Comuna. Luego con "point.in.poly" averiguamos dentro de que comuna se encuentra cada estacion/parada segun sus coordenadas*
+```{r}
+Comunas<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/comunas/CABA_comunas.geojson")
+unique(Comunas$COMUNAS)
+Comunas<-Comunas[,c(4,7)]
+
+ParadasxC<-point.in.poly(ParColec,Comunas)
+#Nos quedamos solo con una variable de frecuencias absolutas
+ParadasxC<-table(ParadasxC$COMUNAS)
+ParadasxC<-as.data.frame(ParadasxC)
+ParadasxC<-ParadasxC%>%rename(Comuna=Var1,Colectivo=Freq)
+rm(ParColec)
+
+SubtxC<-point.in.poly(EstSubt,Comunas)
+SubtxC<-table(SubtxC$COMUNAS)
+SubtxC<-as.data.frame(SubtxC)
+SubtxC<-SubtxC%>%rename(Comuna=Var1,Subte=Freq)
+rm(EstSubt)
+
+TrenxC<-table(EstTren$comuna)
+TrenxC<-as.data.frame(TrenxC)
+TrenxC<-TrenxC%>%rename(Comuna=Var1,Tren=Freq)
+rm(EstTren)
+
+EcoBxC<-point.in.poly(EcoBici, Comunas)
+EcoBxC<-table(EcoBxC$COMUNAS)
+EcoBxC<-as.data.frame(EcoBxC)
+EcoBxC<-EcoBxC%>%rename(Ecobicis=Freq,Comuna= Var1)
+CicloVxC<-table(Ciclovias$COMUNA)
+CicloVxC<-as.data.frame(CicloVxC)
+CicloVxC<-CicloVxC%>%rename(Ciclovias=Freq, Comuna= Var1)
+
+```
+*2.2.2 Finalmente armamos un unico dataset que incluya todos los medios de transporte segun Comuna*
+```{r}
+TranspxC<-full_join(CicloVxC, EcoBxC, by="Comuna")
+TranspxC<-full_join(TranspxC, TrenxC, by="Comuna")
+TranspxC<-full_join(TranspxC, SubtxC, by="Comuna")
+TranspxC<-full_join(TranspxC, ParadasxC, by="Comuna")
+rm(ParadasxC,CicloVxC,EcoBxC,TrenxC,SubtxC)
+view(TranspxC)
+#Transformamos los nulos en 0 y por otro lado eliminamos la "Comuna 0" originaria del ds de Ciclovias por su presensia en la Reserva Ecologica
+TranspxC[is.na(TranspxC)]=0
+TranspxC<-TranspxC[-c(1),]
+```
+
+
+*3. Graficos*
+
+*3.1 Mapas Comunes*
+```{r}
+#Colectivos
 MapaBondis<-leaflet() %>%
   setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
   addProviderTiles(providers$CartoDB.Positron) %>%
   addPolylines(data = colectivos, color="#09ed46", opacity = .3, weight = .5)%>%
   addLegend(position = "topright", colors = c("#09ed46"), labels = c("Red de Colectivos en CABA"))
 MapaBondis
-```
-*2.3.1 Ahora para el grafico de barras, leemos el data set de Paradas.*
-```{r}
-ParadasC<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/colectivos/paradas-de-colectivo.geojson")
-#Teniendo un data set tan pesado, nos quedaremos solo con las columnas estrictamente necesarias
-ParadasC<-ParadasC[,c(3:5,13)]
 
-```
-*2.3.2 En este caso, el data set viene sin una columna que nos indique en que Comuna se ubica cada una de las paradas por lo cual debemos hacerlo nosotros mismos. Comenzamos por cargar el ds con la geografia de cada comuna*
-```{r}
-Comunas<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/comunas/CABA_comunas.geojson")
-unique(Comunas$COMUNAS)
-#Para que al hacer el join no incluya mas variables que la unica necesaria ("COMUNA"), hacemos un recorte
-Comunas<-Comunas[,c(4,5,7)]
-```
-
-*2.3.3 Con la funcion point.in.poly de la libreria spatialEco le agregamos al ds de las paradas una columna que nos diga en que comuna es que cada parada se ubica. Los NA seran las paradas ubicadas por fuera de la CABA.*
-```{r}
-PxC<-point.in.poly(ParadasC,Comunas)
-names(PxC)
-unique(PxC$COMUNAS)
-```
-
-*2.3.4 Graficamos*
-```{r}
-PxC<-table(PxC$COMUNAS)
-barplot(height=PxC)
-PxC<-as.data.frame(PxC)
-#PxC$compare <- PxC$Freq >= mean(PxC$Freq)
-ggplot(PxC,mapping = aes(reorder(Var1, Freq),Freq)) +
-  geom_col(fill="red")+
-  labs(caption ="Paradas de Colectivo por Comuna",
-       x="Comuna",
-       y="Cantidad de Paradas")+
-  theme_dark()+
-  coord_flip()
-```
-
-
-*3.1 Seguimos con subtes.*
-```{r}
-Subte<-fread("lineas-de-subte.csv")
-Subte$wkt <- st_as_sfc(Subte$wkt)
-Subte<- st_as_sf(Subte)
-
-```
-
-*3.1.1 Tambien es importante incluir las Estaciones accesibles y más aun, aquellas que cuentan con ascensores*
-```{r}
-Accesubte<-fread("estaciones-accesibles.csv")
-Accesubte<-Accesubte%>%filter(ascensores>=1)
-```
-
-*3.2 Mapeamos*
-```{r}
+#Subtes
 SillaDeRuedas <- makeIcon(
   iconUrl = "https://images.vexels.com/media/users/3/129039/isolated/preview/9b90dadb8432f24bd49b439e8438f071-icono-plano-de-silla-de-ruedas-by-vexels.png",
   iconWidth = 20, iconHeight = 20,
@@ -127,38 +171,9 @@ MapaSubte<-leaflet() %>%
   addPolylines(data = Subte , color ="#eb34d5",  opacity = 2, weight = 3)%>%
   addMarkers(data= Accesubte, ~long, ~lat, icon = SillaDeRuedas)%>%
   addLegend(position = "topright", colors = c("#eb34d5"), labels = c("Subte"))
-
 MapaSubte
-```
 
-*3.3.1 Repetimos el proceso que hicimos con los colectivos y las comunas*
-```{r}
-EstacionesS<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/subte-estaciones/subte_estaciones.geojson")
-Sub_X_Com<-point.in.poly(EstacionesS,Comunas)
-names(Sub_X_Com)
-Sub_X_Com<-table(Sub_X_Com$COMUNAS)
-Sub_X_Com<-as.data.frame(Sub_X_Com)
-
-```
-*3.3.2 Ploteamos*
-```{r}
-ggplot(Sub_X_Com,mapping = aes(reorder(Var1, Freq),Freq)) +
-  geom_col(fill="blue")+
-  labs(caption ="Estaciones de Subte por Comuna",
-       x="Comuna",
-       y="Cantidad de Estaciones")+
-  theme_dark()+
-  coord_flip()
-```
-
-*4.1 Seguimos con Trenes*
-```{r}
-Trenes<-fread("red-de-ferrocarril.csv", encoding = "UTF-8")
-Trenes$WKT <- st_as_sfc(Trenes$WKT)
-Trenes<- st_as_sf(Trenes)
-```
-*4.2 Mapeamos*
-```{r}
+#Trenes
 MapaTren<-leaflet() %>%
   setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
   addProviderTiles(providers$CartoDB.Positron) %>%
@@ -166,101 +181,228 @@ MapaTren<-leaflet() %>%
   addLegend(position = "topright", colors = c("#30c9fc"), labels = c("Tren"))
 MapaTren
 
+#Bicicletas
+MapaBicis<-leaflet() %>%
+  setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
+  addProviderTiles(providers$CartoDB.Positron) %>%  
+  addMarkers(data=EcoBici, clusterOptions = markerClusterOptions())%>%
+  addPolylines(data = Ciclovias, color = "#c7730c", opacity = 1, weight = 1)
+MapaBicis  
 ```
-*4.3 Este ds incluye una columna de Comuna, pero para que el grafico no incluya una larga columna de "OTROS, eliminamos primero los casos que esten vacios para esa columna, que indican que esa estacion esta fuera de CABA*
+
+*3.2 Graficos de Barra*
 ```{r}
-EstacionesT<-fread("estaciones-de-ferrocarril.csv")
-EstacionesT$comuna[EstacionesT$comuna==""]<-NA
-EstacionesT<-EstacionesT[complete.cases(EstacionesT[ , 9]),]
-EstacionesT<-EstacionesT[,-c(10:11)]
-```
-*4.3.1 Ploteamos*
-```{r}
-TrenComuna<-table(EstacionesT$comuna)
-TrenComuna<-as.data.frame(TrenComuna)
-ggplot(TrenComuna) +
-  geom_col(mapping = aes(reorder(Var1, Freq),Freq),fill=TrenComuna$Freq)+
+#colectivos
+BarrasBondis<-ggplot(TranspxC,mapping = aes(
+  reorder(Comuna, Colectivo),
+  Colectivo))+
+  geom_col(fill="#09ed46",
+           color="black")+
+  geom_text(aes(label = Colectivo), 
+            vjust = 2, size = 3.5)+
+  labs(title ="Paradas de Colectivo por Comuna",
+       x="Comuna",
+       y="Cantidad de Paradas",
+       caption = "Fuente: https://data.buenosaires.gob.ar")+
+  theme_classic()
+BarrasBondis 
+
+#subtes
+BarrasSubte<-ggplot(TranspxC,mapping = aes(
+  reorder(Comuna, Subte),
+  Subte)) +
+  geom_col(fill="#eb34d5",
+           color="black")+
+  geom_text(aes(label = Subte), 
+            vjust = 2.1, size = 3.5)+
+  labs(title = "Estaciones de Subte por Comuna",
+       x="Comuna",
+       y="Cantidad de Estaciones",
+       caption = "Fuente: https://data.buenosaires.gob.ar ")+
+  theme_classic()
+BarrasSubte
+
+#Trenes
+BarrasTren<-ggplot(TranspxC,mapping = aes(
+  reorder(Comuna, Tren),
+  Tren)) +
+  geom_col(fill="#30c9fc",
+           color="black")+
+  geom_text(aes(label = Tren),
+            vjust = 2, size = 3.5)+
   labs(caption ="Estaciones de Tren por Comuna",
        x="Comuna",
        y="Cantidad de Estaciones")+
-  theme_dark()+
-  coord_flip()
-```
+  theme_classic()
+BarrasTren
 
-*5.1 Por ultimo bicicletas. Nos interesa tanto la red de Ciclovias como la disposicion de las Ecobicis*
-```{r}
-Ciclovias<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/transporte/ciclovias/ciclovias_WGS84.geojson")
-EcoBici<-st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/transporte/estaciones-bicicletas-publicas/nuevas-estaciones-bicicletas-publicas.geojson")
-```
-
-*5.2 Mapeamos*
-```{r}
-Bicicletas<-leaflet() %>%
-  setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
-  addProviderTiles(providers$CartoDB.Positron) %>%  
-  addCircles(data=EcoBici, color="#fa4d02", radius = EcoBici$anclajes_t)%>%
-  addPolylines(data = Ciclovias, color = "#edfa00", opacity = 1, weight = 1)
-Bicicletas  
-```
-
-*5.3.1 Antes de plotear vamos a armar un solo ds(SBxC) que nos permita en un solo grafico mostrar tanto la distribucion de Ecobicis como la de bicisendas* 
-```{r}
-EcoB_x_Com<-point.in.poly(EcoBici, Comunas)
-EcoB_x_Com<-table(EcoB_x_Com$COMUNAS)
-CicloV_x_Com<-table(Ciclovias$COMUNA)
-EcoB_x_Com<-as.data.frame(EcoB_x_Com)
-CicloV_x_Com<-as.data.frame(CicloV_x_Com)
-EcoB_x_Com<-EcoB_x_Com%>%rename(Ecobicis=Freq,Comuna= Var1)
-CicloV_x_Com<-CicloV_x_Com%>%rename(Ciclovias=Freq, Comuna= Var1)
-SBxC<-full_join(CicloV_x_Com, EcoB_x_Com, by="Comuna")
-SBxC[is.na(SBxC)]=0
-```
-*5.3.2 Finalemente ploteamos*
-```{r}
-ggplot(SBxC, aes(reorder(Comuna, Ciclovias),Ciclovias, label=Ciclovias)) +
-  geom_col(aes(fill = "Ciclovias"), 
-           width = 0.5,
-           position = position_nudge(x = -0.225)) +
-  geom_col(aes(y = Ecobicis, fill = "Ecobicis", label=Ecobicis), 
+#Bicis
+BarrasBici<-ggplot(TranspxC)+
+  geom_col(mapping = aes(
+           x=reorder(Comuna,Ciclovias),
+           y=Ciclovias),
+           fill= "tan1",
+           width = .5,
+           position = position_nudge(x = -0.225))+
+  geom_col(mapping = aes(
+           x=Comuna,
+           y=Ecobicis),
+           fill= "slategray4",
            width = 0.5,
            position = position_nudge(x = 0.225))+
-  labs(caption = "Servicios de Bicicleta segun Comuna. Fuente: GCBA",
+  labs(title ="Servicios de Bicicleta segun Comuna.",
        x="Comuna",
-       y="")+
-  geom_text(size = 3, position = position_stack(vjust = 0.5))
-  
- 
+       y="Cantidad",
+       caption = "Fuente: https://data.buenosaires.gob.ar")+
+  theme_classic()+
+  coord_flip()
+BarrasBici
+```
+
+*2.4 Coropletas*
+```{r}
+#1) agragamos datos geo de las comunas al ds de Transportes x Comuna: por un lado su poligono, y por el otro, sus centroides para poder etiquetar las comunas en los mapas
+Comunas<-Comunas%>%rename(Comuna=COMUNAS)
+Comunas$centroide<-st_centroid(Comunas$geometry)
+Comunas <- Comunas %>%mutate(
+  lat = unlist(map(Comunas$centroide,1)),
+  long = unlist(map(Comunas$centroide,2)))
+Comunas$Comuna<-as.character(Comunas$Comuna)
+TranspxC$Comuna<-as.character(TranspxC$Comuna)
+TranspxC<-left_join(x=Comunas,y=TranspxC, by="Comuna")
+
+#2)vamos a querer que las coropletas las haga segun frecuencias porcentuales.
+sum(TranspxC$Colectivo)
+TranspxC<-TranspxC%>%mutate(Colecx100=Colectivo/8321)
+#3)Luego arammos una paleta
+palColec <- colorNumeric(palette = "YlOrRd", domain= TranspxC$Colecx100)
+#4)Lo mapeamos
+CoroBondis<-leaflet(TranspxC) %>% 
+  setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
+  addProviderTiles(providers$CartoDB.Positron)%>%
+  addPolygons(
+  fillColor = ~palColec(Colecx100),
+  weight = 1,
+  opacity = 1,
+  color = "black",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE))%>%
+  addLegend(pal=palColec, 
+            values = ~Colecx100,
+            opacity = 0.7, 
+            title = "Porcentaje del total de Paradas",
+            labFormat = labelFormat(suffix="%"),
+            position = "bottomleft")%>%
+  addLabelOnlyMarkers(  ~lat,~long, label =  ~as.character(Comuna), 
+                      labelOptions = labelOptions(noHide = T, size=1,
+                                                  direction='top',textOnly = F))
+CoroBondis
+
+#SUBTES
+sum(TranspxC$Subte)
+TranspxC<-TranspxC%>%mutate(Subtex100=Subte/90)
+palSubte<- colorNumeric(palette = "YlOrRd", domain= TranspxC$Subtex100)
+
+CoroSubte<-leaflet(TranspxC) %>% 
+  setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
+  addProviderTiles(providers$CartoDB.Positron)%>%
+  addPolygons(
+  fillColor = ~palSubte(Subtex100),
+  weight = 1,
+  opacity = 1,
+  color = "black",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE))%>%
+  addLegend(pal = palSubte, 
+            values = ~Subtex100,
+            opacity = 0.7, 
+            title = "Porcentaje del total de Estaciones de Subte",
+            labFormat = labelFormat(suffix="%"),
+            position = "bottomleft")%>%
+  addLabelOnlyMarkers(  ~lat,~long, label =  ~as.character(Comuna), 
+                      labelOptions = labelOptions(noHide = T, size=1,
+                                                  direction='top',textOnly = F))
+CoroSubte
+
+#TRENES
+sum(TranspxC$Tren)
+TranspxC<-TranspxC%>%mutate(Trenx100=Tren/29)
+palTren <- colorNumeric(palette = "YlOrRd", domain= TranspxC$Trenx100)
+
+CoroTren<-leaflet(TranspxC) %>% 
+  setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
+  addProviderTiles(providers$CartoDB.Positron)%>%
+  addPolygons(
+  fillColor = ~palTren(Trenx100),
+  weight = 1,
+  opacity = 1,
+  color = "black",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE))%>%
+  addLegend(pal = palTren, 
+            values = ~Trenx100,
+            opacity = 0.7, 
+            title = "Porcentaje del total de Estaciones de Tren",
+            labFormat = labelFormat(suffix="%"),
+            position = "bottomleft")%>%
+  addLabelOnlyMarkers(  ~lat,~long, label =  ~as.character(Comuna), 
+                      labelOptions = labelOptions(noHide = T, size=1,
+                                                  direction='top',textOnly = F))
+CoroTren
+
+#Bicis
+
+sum(TranspxC$Ciclovias)
+TranspxC<-TranspxC%>%mutate(CicloVx100=Ciclovias/2916)
+palCicloV<-colorNumeric(palette = "YlOrRd", domain= TranspxC$CicloVx100)
+sum(TranspxC$Ecobicis)
+TranspxC<-TranspxC%>%mutate(EcoBx100=Ecobicis/200)
+palEcoB<-colorNumeric(palette = "YlOrRd", domain= TranspxC$EcoBx100)
 
 
+CoroEcoB<-leaflet(TranspxC) %>% 
+  setView(lng = -58.445531, lat = -34.606653, zoom = 11)%>%
+  addProviderTiles(providers$CartoDB.Positron)%>%
+  addPolygons(
+  fillColor = ~palEcoB(EcoBx100),
+  weight = 1,
+  opacity = 1,
+  color = "black",
+  dashArray = "3",
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE))%>%
+  addLegend(pal = palEcoB, 
+            values = ~EcoBx100,
+            opacity = 0.7, 
+            title = "Porcentaje del total de Ecobicis",
+            labFormat = labelFormat(suffix="%"),
+            position = "bottomleft")%>%
+  addLabelOnlyMarkers(  ~lat,~long, label =  ~as.character(Comuna), 
+                      labelOptions = labelOptions(noHide = T,
+                                                  direction='top',textOnly = F))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+CoroEcoB
+```
